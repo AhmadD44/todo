@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(convert assets/cat_logo.avif assets/cat_logo.png)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(python -c ' *)",
+      "Bash(dart run *)",
+      "Read(//c/Users/ahmad/AppData/Local/Pub/Cache/hosted/pub.dev/**)",
+      "Bash(grep -rn \"identifier\\\\|class TimezoneInfo\\\\|String\" ~/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_timezone-5.1.0/lib/classes/*.dart 2>/dev/null | head -20; echo \"=== find class ===\"; grep -rln \"class TimezoneInfo\" ~/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_timezone-5.1.0/lib/ 2>/dev/null)",
+      "Read(//c/Users/ahmad/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_timezone-5.1.0/lib/**)",
+      "Read(//c/Users/ahmad/AppData/Local/Pub/Cache/hosted/pub.dev/flutter_local_notifications-22.0.1/lib/src/**)"
+    ]
+  }
+}
