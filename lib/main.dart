@@ -11,23 +11,35 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Load the saved theme (guarded internally) before the first frame.
   await loadThemeMode();
-  await NotificationService.instance.init();
 
-  // Tapping any reminder opens the Special Dates screen.
-  NotificationService.instance.onReminderTap = _openSpecialDates;
-
-  // Re-arm saved reminders (rolls yearly dates forward, survives reboots).
-  await NotificationService.instance.rescheduleAll();
-
+  // Render the UI immediately. Notification setup runs afterwards and is fully
+  // guarded, so a slow/failed native call can never block startup — otherwise
+  // the app would sit forever on the launch/splash screen (seen on iOS).
   runApp(const LoveNotesApp());
 
-  // If the app was cold-started by tapping a reminder, jump straight to it.
-  WidgetsBinding.instance.addPostFrameCallback((_) async {
+  _initNotifications();
+}
+
+/// Initialise notifications without blocking app startup.
+Future<void> _initNotifications() async {
+  try {
+    await NotificationService.instance.init();
+
+    // Tapping any reminder opens the Special Dates screen.
+    NotificationService.instance.onReminderTap = _openSpecialDates;
+
+    // If the app was cold-started by tapping a reminder, jump straight to it.
     if (await NotificationService.instance.launchedFromNotification()) {
       _openSpecialDates();
     }
-  });
+
+    // Re-arm saved reminders (rolls yearly dates forward, survives reboots).
+    await NotificationService.instance.rescheduleAll();
+  } catch (e) {
+    debugPrint('Notification initialisation failed: $e');
+  }
 }
 
 void _openSpecialDates() {

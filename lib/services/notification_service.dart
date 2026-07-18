@@ -38,7 +38,15 @@ class NotificationService {
     }
 
     const androidInit = AndroidInitializationSettings('ic_stat_heart');
-    const settings = InitializationSettings(android: androidInit);
+    // iOS: don't ask for permission at init — we request it contextually when
+    // the user opens the Special Dates screen.
+    const iosInit = DarwinInitializationSettings(
+      requestAlertPermission: false,
+      requestBadgePermission: false,
+      requestSoundPermission: false,
+    );
+    const settings =
+        InitializationSettings(android: androidInit, iOS: iosInit);
     await _plugin.initialize(
       settings: settings,
       onDidReceiveNotificationResponse: (_) => onReminderTap?.call(),
@@ -65,12 +73,17 @@ class NotificationService {
     return details?.didNotificationLaunchApp ?? false;
   }
 
-  /// Ask for the runtime notification + exact-alarm permissions (Android 13+/12+).
+  /// Ask for the runtime notification permissions on Android (13+/12+ exact
+  /// alarms) and iOS.
   Future<void> requestPermissions() async {
     final android = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
     await android?.requestNotificationsPermission();
     await android?.requestExactAlarmsPermission();
+
+    final ios = _plugin.resolvePlatformSpecificImplementation<
+        IOSFlutterLocalNotificationsPlugin>();
+    await ios?.requestPermissions(alert: true, badge: true, sound: true);
   }
 
   NotificationDetails get _details => const NotificationDetails(
@@ -81,6 +94,11 @@ class NotificationService {
           importance: Importance.max,
           priority: Priority.high,
           icon: _icon,
+        ),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
         ),
       );
 
