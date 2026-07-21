@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/task.dart';
 import '../theme/app_theme.dart';
 import '../widgets/task_tile.dart';
+import 'common_view.dart';
 import 'special_dates_view.dart';
 
 /// Main screen: the tabbed list of romantic plans / to-dos.
@@ -18,10 +19,23 @@ class _HomeScreenState extends State<HomeScreen>
   List<Task> _tasks = [];
   bool _isLoading = true;
 
+  // Tabs: All · Common · Dates · Personal  (Common sits beside All).
+  late final TabController _tabController;
+  static const int _commonTabIndex = 1;
+
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 4, vsync: this)
+      // Rebuild so the FAB hides while the Common tab is active.
+      ..addListener(() => setState(() {}));
     _loadTasks();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadTasks() async {
@@ -43,6 +57,19 @@ class _HomeScreenState extends State<HomeScreen>
       createdAt: DateTime.now(),
     );
     setState(() => _tasks.insert(0, newTask));
+    _saveTasks();
+  }
+
+  /// Apply edits from the edit dialog, keeping id/createdAt/done state intact.
+  void _updateTask(String id, String title, String category) {
+    setState(() {
+      _tasks = _tasks.map((task) {
+        if (task.id == id) {
+          return task.copyWith(title: title, category: category);
+        }
+        return task;
+      }).toList();
+    });
     _saveTasks();
   }
 
@@ -120,9 +147,12 @@ class _HomeScreenState extends State<HomeScreen>
     Future.delayed(const Duration(seconds: 6), () => controller.close());
   }
 
-  void _showAddTaskDialog(BuildContext context) {
-    String taskTitle = '';
-    String selectedCategory = 'Dates';
+  /// Shows the add dialog, or the edit dialog when [existing] is provided.
+  void _showTaskDialog(BuildContext context, {Task? existing}) {
+    final bool isEditing = existing != null;
+    final controller = TextEditingController(text: existing?.title ?? '');
+    String taskTitle = existing?.title ?? '';
+    String selectedCategory = existing?.category ?? 'Dates';
 
     showDialog(
       context: context,
@@ -138,7 +168,7 @@ class _HomeScreenState extends State<HomeScreen>
                   const Icon(Icons.favorite, color: AppColors.crimson),
                   const SizedBox(width: 8),
                   Text(
-                    'Add New Memory',
+                    isEditing ? 'Edit Memory' : 'Add New Memory',
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
                       color: AppColors.heading(context),
@@ -151,6 +181,7 @@ class _HomeScreenState extends State<HomeScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     TextField(
+                      controller: controller,
                       autofocus: true,
                       textCapitalization: TextCapitalization.sentences,
                       style: TextStyle(color: AppColors.bodyText(context)),
@@ -240,7 +271,12 @@ class _HomeScreenState extends State<HomeScreen>
                 ElevatedButton(
                   onPressed: () {
                     if (taskTitle.trim().isNotEmpty) {
-                      _addTask(taskTitle.trim(), selectedCategory);
+                      if (isEditing) {
+                        _updateTask(
+                            existing.id, taskTitle.trim(), selectedCategory);
+                      } else {
+                        _addTask(taskTitle.trim(), selectedCategory);
+                      }
                       Navigator.pop(context);
                     }
                   },
@@ -251,8 +287,8 @@ class _HomeScreenState extends State<HomeScreen>
                         borderRadius: BorderRadius.circular(12)),
                     elevation: 1,
                   ),
-                  child: const Text('Add Plan',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  child: Text(isEditing ? 'Save Changes' : 'Add Plan',
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
                 ),
               ],
             );
@@ -335,6 +371,7 @@ class _HomeScreenState extends State<HomeScreen>
             task: task,
             onToggle: () => _toggleTask(task.id),
             onDelete: () => _deleteTask(task.id),
+            onEdit: () => _showTaskDialog(context, existing: task),
           ),
         );
       },
@@ -344,57 +381,56 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   Widget build(BuildContext context) {
     final bool dark = AppColors.isDark(context);
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
+    return Scaffold(
         appBar: AppBar(
           backgroundColor: AppColors.scaffold(context),
           elevation: 0,
+          actionsPadding: const EdgeInsets.only(right: 4),
           actions: [
             IconButton(
               tooltip: dark ? 'Light mode' : 'Dark mode',
+              visualDensity: VisualDensity.compact,
               icon: Icon(
                 dark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
                 color: AppColors.crimson,
               ),
               onPressed: toggleThemeMode,
             ),
-            Padding(
-              padding: const EdgeInsets.only(right: 6),
-              child: IconButton(
-                tooltip: 'Special Dates',
-                icon: const Icon(Icons.celebration_rounded,
-                    color: AppColors.crimson),
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                        builder: (_) => const SpecialDatesScreen()),
-                  );
-                },
-              ),
+            IconButton(
+              tooltip: 'Special Dates',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.celebration_rounded,
+                  color: AppColors.crimson),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                      builder: (_) => const SpecialDatesScreen()),
+                );
+              },
             ),
           ],
-          title: Column(
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.favorite, color: AppColors.crimson, size: 22),
-                  const SizedBox(width: 8),
-                  Text(
-                    'SiSi - NOTES',
-                    style: TextStyle(
-                      color: AppColors.heading(context),
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 0.5,
-                      fontSize: 22,
-                    ),
+          // FittedBox keeps the title from overflowing next to the actions.
+          title: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.favorite, color: AppColors.crimson, size: 22),
+                const SizedBox(width: 8),
+                Text(
+                  'SiSi - NOTES',
+                  style: TextStyle(
+                    color: AppColors.heading(context),
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                    fontSize: 22,
                   ),
-                  const SizedBox(width: 8),
-                  const Icon(Icons.favorite, color: AppColors.crimson, size: 22),
-                ],
-              ),
-            ],
+                ),
+                const SizedBox(width: 8),
+                const Icon(Icons.favorite, color: AppColors.crimson, size: 22),
+              ],
+            ),
           ),
           bottom: PreferredSize(
             preferredSize: const Size.fromHeight(64),
@@ -406,26 +442,24 @@ class _HomeScreenState extends State<HomeScreen>
                 borderRadius: BorderRadius.circular(24),
               ),
               child: TabBar(
+                controller: _tabController,
+                // Scrollable so the four tabs never get squeezed.
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
                 indicator: const BoxDecoration(
                   color: AppColors.crimson,
                   borderRadius: BorderRadius.all(Radius.circular(20)),
                 ),
+                indicatorSize: TabBarIndicatorSize.tab,
                 dividerColor: Colors.transparent,
                 labelColor: Colors.white,
                 unselectedLabelColor: AppColors.deepRose,
+                labelPadding: const EdgeInsets.symmetric(horizontal: 18),
                 labelStyle:
                     const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                 tabs: const [
-                  Tab(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.all_inclusive, size: 16),
-                        SizedBox(width: 4),
-                        Text('All'),
-                      ],
-                    ),
-                  ),
+                  Tab(child: Text('All ✨')),
+                  Tab(child: Text('Common 💞')),
                   Tab(child: Text('Dates 🌹')),
                   Tab(child: Text('Personal 👤')),
                 ],
@@ -437,22 +471,27 @@ class _HomeScreenState extends State<HomeScreen>
             ? const Center(
                 child: CircularProgressIndicator(color: AppColors.crimson))
             : TabBarView(
+                controller: _tabController,
                 children: [
                   _buildTaskList('All'),
+                  const CommonTab(),
                   _buildTaskList('Dates'),
                   _buildTaskList('Personal'),
                 ],
               ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: () => _showAddTaskDialog(context),
-          backgroundColor: AppColors.crimson,
-          foregroundColor: Colors.white,
-          elevation: 4,
-          icon: const Icon(Icons.add_circle_rounded, size: 22),
-          label: const Text('Add Plan',
-              style: TextStyle(fontWeight: FontWeight.bold)),
-        ),
-      ),
-    );
+        // Hide the "Add Plan" FAB on the Common tab (it has its own Write button).
+        floatingActionButton: _tabController.index == _commonTabIndex
+            ? null
+            : FloatingActionButton.extended(
+                heroTag: 'homeAdd',
+                onPressed: () => _showTaskDialog(context),
+                backgroundColor: AppColors.crimson,
+                foregroundColor: Colors.white,
+                elevation: 4,
+                icon: const Icon(Icons.add_circle_rounded, size: 22),
+                label: const Text('Add Plan',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+      );
   }
 }

@@ -1,0 +1,51 @@
+rules_version = '2';
+
+// Security rules for the "Common" shared feed.
+//
+// Notes live at: couples/{coupleCode}/notes/{noteId}
+//
+// The app has no user accounts — pairing is by a shared couple code — so these
+// rules validate the *shape* of the data rather than user identity. The couple
+// code acts as a shared secret: only someone who knows it can read/write that
+// couple's feed. Use a non-trivial code (the app generates SISI-XXXX).
+//
+// NOTE: this is privacy-by-obscurity, appropriate for a private 2-person app.
+// It is NOT strong security — anyone who learns your couple code can access the
+// feed. For stronger guarantees you would add Firebase Auth later.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Everything is denied unless a rule below explicitly allows it.
+    match /couples/{coupleCode}/notes/{noteId} {
+
+      // A well-formed note the app writes.
+      function isValidNote(data) {
+        return data.text is string
+            && data.text.size() > 0
+            && data.text.size() <= 2000
+            && data.author is string
+            && data.author.size() <= 100
+            && (!('isDone' in data) || data.isDone is bool);
+      }
+
+      // Reading the feed only requires knowing the couple code (the doc path).
+      allow read: if true;
+
+      // Creating a note: must be well-formed and carry a server timestamp.
+      allow create: if isValidNote(request.resource.data)
+                    && request.resource.data.createdAt == request.time;
+
+      // Editing: only the text may change; author & timestamp stay fixed.
+      allow update: if isValidNote(request.resource.data)
+                    && request.resource.data.author == resource.data.author
+                    && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if true;
+    }
+
+    // Block access to any other path.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

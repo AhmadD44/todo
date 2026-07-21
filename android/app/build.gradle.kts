@@ -5,6 +5,12 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Firebase: apply the Google Services plugin only once google-services.json
+// has been added, so the app still builds before Firebase is configured.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     namespace = "com.example.todo_app"
     compileSdk = flutter.compileSdkVersion

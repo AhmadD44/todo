@@ -1,5 +1,8 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
+import 'firebase_options.dart';
+import 'services/common_service.dart';
 import 'services/notification_service.dart';
 import 'theme/app_theme.dart';
 import 'views/home_view.dart';
@@ -14,12 +17,28 @@ Future<void> main() async {
   // Load the saved theme (guarded internally) before the first frame.
   await loadThemeMode();
 
-  // Render the UI immediately. Notification setup runs afterwards and is fully
+  // Render the UI immediately. All native setup runs afterwards and is fully
   // guarded, so a slow/failed native call can never block startup — otherwise
   // the app would sit forever on the launch/splash screen (seen on iOS).
   runApp(const LoveNotesApp());
 
+  _initFirebase();
   _initNotifications();
+}
+
+/// Initialise Firebase for the shared Common feed. Failure is non-fatal: the
+/// Common screen simply shows setup instructions and the rest of the app
+/// (notes, special dates) keeps working entirely offline.
+Future<void> _initFirebase() async {
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    CommonService.isReady = true;
+  } catch (e) {
+    CommonService.isReady = false;
+    debugPrint('Firebase not configured — Common feed disabled: $e');
+  }
 }
 
 /// Initialise notifications without blocking app startup.

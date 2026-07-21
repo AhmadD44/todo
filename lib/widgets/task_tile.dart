@@ -9,11 +9,16 @@ class TaskTile extends StatelessWidget {
   final VoidCallback onToggle;
   final VoidCallback onDelete;
 
+  /// Tapping the card body edits the note — keeps the design clean by
+  /// avoiding an extra edit icon on every tile.
+  final VoidCallback onEdit;
+
   const TaskTile({
     super.key,
     required this.task,
     required this.onToggle,
     required this.onDelete,
+    required this.onEdit,
   });
 
   @override
@@ -46,6 +51,8 @@ class TaskTile extends StatelessWidget {
         ),
       ),
       child: ListTile(
+        onTap: onEdit,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         leading: Container(
