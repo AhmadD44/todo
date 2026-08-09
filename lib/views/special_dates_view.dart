@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../models/special_date.dart';
+import '../services/auth_service.dart';
 import '../services/notification_service.dart';
+import '../services/user_repository.dart';
 import '../theme/app_theme.dart';
+import '../widgets/stream_error.dart';
 
 // ---- Small date/time formatting helpers (avoids the intl dependency) -------
 
@@ -38,35 +41,39 @@ class SpecialDatesScreen extends StatefulWidget {
 }
 
 class _SpecialDatesScreenState extends State<SpecialDatesScreen> {
-  List<SpecialDate> _dates = [];
-  bool _loading = true;
+  String? _coupleCode;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _loadCouple();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       NotificationService.instance.requestPermissions();
     });
   }
 
-  Future<void> _load() async {
+  String? get _uid => AuthService.uid;
+  bool get _paired => _coupleCode != null;
+
+  Future<void> _loadCouple() async {
+    final uid = _uid;
+    if (uid == null) return;
     try {
-      _dates = await SpecialDate.loadAll();
-    } catch (e) {
-      debugPrint('Error loading special dates: $e');
-    }
-    _sort();
-    setState(() => _loading = false);
+      final code = await UserRepository.loadCoupleCode(uid);
+      if (mounted) setState(() => _coupleCode = code);
+    } catch (_) {/* ignore */}
   }
 
-  void _sort() =>
-      _dates.sort((a, b) => a.nextOccurrence().compareTo(b.nextOccurrence()));
+  List<SpecialDate> _sorted(List<SpecialDate> dates) {
+    final list = [...dates];
+    list.sort((a, b) => a.nextOccurrence().compareTo(b.nextOccurrence()));
+    return list;
+  }
 
-  Future<void> _save() => SpecialDate.saveAll(_dates);
-
-  Future<void> _addDate(
-      String title, String type, DateTime dateTime, bool repeatYearly) async {
+  Future<void> _addDate(String title, String type, DateTime dateTime,
+      bool repeatYearly, bool shared) async {
+    final uid = _uid;
+    if (uid == null) return;
     final date = SpecialDate(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       title: title,
@@ -74,12 +81,13 @@ class _SpecialDatesScreenState extends State<SpecialDatesScreen> {
       dateTime: dateTime,
       notifId: DateTime.now().microsecondsSinceEpoch.remainder(1 << 30),
       repeatYearly: repeatYearly,
+      shared: shared,
     );
-    setState(() {
-      _dates.add(date);
-      _sort();
-    });
-    await _save();
+    if (shared && _coupleCode != null) {
+      await UserRepository.upsertSharedSpecialDate(_coupleCode!, date);
+    } else {
+      await UserRepository.upsertSpecialDate(uid, date);
+    }
     await NotificationService.instance.schedule(date);
 
     if (!mounted) return;
@@ -87,9 +95,14 @@ class _SpecialDatesScreenState extends State<SpecialDatesScreen> {
   }
 
   Future<void> _deleteDate(SpecialDate date) async {
+    final uid = _uid;
+    if (uid == null) return;
     await NotificationService.instance.cancel(date);
-    setState(() => _dates.removeWhere((d) => d.id == date.id));
-    await _save();
+    if (date.shared && _coupleCode != null) {
+      await UserRepository.deleteSharedSpecialDate(_coupleCode!, date.id);
+    } else {
+      await UserRepository.deleteSpecialDate(uid, date.id);
+    }
 
     if (!mounted) return;
     _toast('"${date.title}" reminder removed.');
@@ -136,17 +149,42 @@ class _SpecialDatesScreenState extends State<SpecialDatesScreen> {
           ],
         ),
       ),
-      body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: AppColors.crimson))
-          : _dates.isEmpty
-              ? _buildEmptyState()
-              : ListView.builder(
-                  padding: const EdgeInsets.only(top: 12, bottom: 90),
-                  itemCount: _dates.length,
-                  itemBuilder: (context, index) =>
-                      _buildDateCard(_dates[index]),
-                ),
+      body: StreamBuilder<List<SpecialDate>>(
+        stream:
+            _uid == null ? null : UserRepository.specialDatesStream(_uid!),
+        builder: (context, personalSnap) {
+          if (personalSnap.hasError && !personalSnap.hasData) {
+            return const StreamError(
+                message: 'Couldn\'t load your special dates.');
+          }
+          // Nested stream for the couple's shared dates (if paired).
+          return StreamBuilder<List<SpecialDate>>(
+            stream: _coupleCode == null
+                ? const Stream.empty()
+                : UserRepository.sharedSpecialDatesStream(_coupleCode!),
+            builder: (context, sharedSnap) {
+              final personal = personalSnap.data;
+              // Wait only for the personal (primary) stream's first data.
+              if (personal == null &&
+                  personalSnap.connectionState == ConnectionState.waiting) {
+                return const Center(
+                    child:
+                        CircularProgressIndicator(color: AppColors.crimson));
+              }
+              final dates = _sorted([
+                ...(personal ?? const <SpecialDate>[]),
+                ...(sharedSnap.data ?? const <SpecialDate>[]),
+              ]);
+              if (dates.isEmpty) return _buildEmptyState();
+              return ListView.builder(
+                padding: const EdgeInsets.only(top: 12, bottom: 90),
+                itemCount: dates.length,
+                itemBuilder: (context, index) => _buildDateCard(dates[index]),
+              );
+            },
+          );
+        },
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _showAddDateDialog,
         backgroundColor: AppColors.crimson,
@@ -253,6 +291,11 @@ class _SpecialDatesScreenState extends State<SpecialDatesScreen> {
                 child: Icon(Icons.autorenew_rounded,
                     size: 15, color: AppColors.crimson.withOpacity(0.8)),
               ),
+            if (date.shared)
+              const Padding(
+                padding: EdgeInsets.only(left: 4),
+                child: Text('💞', style: TextStyle(fontSize: 13)),
+              ),
           ],
         ),
         subtitle: Padding(
@@ -342,6 +385,7 @@ class _SpecialDatesScreenState extends State<SpecialDatesScreen> {
     DateTime? pickedDate;
     TimeOfDay? pickedTime;
     bool repeatYearly = false;
+    bool shared = false;
 
     showDialog(
       context: context,
@@ -498,6 +542,27 @@ class _SpecialDatesScreenState extends State<SpecialDatesScreen> {
                       onChanged: (v) =>
                           setDialogState(() => repeatYearly = v),
                     ),
+                    if (_paired)
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        activeColor: AppColors.crimson,
+                        title: Text(
+                          'Shared with partner 💞',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: AppColors.heading(context),
+                          ),
+                        ),
+                        subtitle: Text(
+                          'You\'ll both see it and be reminded',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey.shade500),
+                        ),
+                        value: shared,
+                        onChanged: (v) => setDialogState(() => shared = v),
+                      ),
                   ],
                 ),
               ),
@@ -530,7 +595,8 @@ class _SpecialDatesScreenState extends State<SpecialDatesScreen> {
                       return;
                     }
                     Navigator.pop(context);
-                    _addDate(title.trim(), selectedType, dt, repeatYearly);
+                    _addDate(title.trim(), selectedType, dt, repeatYearly,
+                        shared);
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.crimson,

@@ -67,6 +67,17 @@ class NotificationService {
     _initialized = true;
   }
 
+  /// Show an immediate notification — used to surface a partner's Common post
+  /// while the app is in the foreground (background is handled by the OS).
+  Future<void> showNow({required String title, required String body}) async {
+    await _plugin.show(
+      id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      title: title,
+      body: body,
+      notificationDetails: _details,
+    );
+  }
+
   /// True if the app was launched by tapping a notification (cold start).
   Future<bool> launchedFromNotification() async {
     final details = await _plugin.getNotificationAppLaunchDetails();
@@ -150,10 +161,9 @@ class NotificationService {
     await _plugin.cancel(id: d.notifId + 2);
   }
 
-  /// Re-arm every saved reminder. Called at startup so yearly dates roll
-  /// forward to their next occurrence and nothing is lost after a reboot.
-  Future<void> rescheduleAll() async {
-    final dates = await SpecialDate.loadAll();
+  /// Re-arm the given reminders. Called after the user's dates load so yearly
+  /// dates roll forward to their next occurrence and nothing is lost.
+  Future<void> rescheduleAll(List<SpecialDate> dates) async {
     for (final d in dates) {
       await schedule(d);
     }

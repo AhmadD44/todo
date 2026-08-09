@@ -1,42 +1,11 @@
 import 'dart:math';
 
-import 'package:shared_preferences/shared_preferences.dart';
-
-/// Stores who you are and which couple feed you're linked to.
+/// Helpers for the couple-code pairing used by the shared "Common" feed.
 ///
-/// Pairing is deliberately simple: one partner generates a code, the other
-/// types the same code in. Both devices then read/write the same feed — no
-/// accounts, passwords or login screens.
+/// The code itself is stored per account in Firestore (see [UserRepository]);
+/// this class only builds and normalises codes.
 class CoupleService {
   CoupleService._();
-
-  static const String _codeKey = 'couple_code';
-  static const String _nameKey = 'couple_display_name';
-
-  /// The saved couple code and display name (both null when not paired yet).
-  static Future<({String? code, String? name})> load() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      return (
-        code: prefs.getString(_codeKey),
-        name: prefs.getString(_nameKey),
-      );
-    } catch (_) {
-      return (code: null, name: null);
-    }
-  }
-
-  static Future<void> save({required String code, required String name}) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_codeKey, code);
-    await prefs.setString(_nameKey, name);
-  }
-
-  static Future<void> unpair() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_codeKey);
-    await prefs.remove(_nameKey);
-  }
 
   /// Builds a friendly, easy-to-share code such as `SISI-4X7Q`.
   static String generateCode() {

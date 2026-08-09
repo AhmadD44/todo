@@ -1,6 +1,3 @@
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
-
 /// A single romantic plan / to-do item.
 class Task {
   final String id;
@@ -48,23 +45,4 @@ class Task {
         category: json['category'] ?? 'Dates',
         createdAt: DateTime.parse(json['createdAt']),
       );
-
-  // --- Persistence (SharedPreferences JSON) ---
-  static const String _prefsKey = 'love_tasks';
-
-  static Future<List<Task>> loadAll() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_prefsKey);
-    if (raw == null) return [];
-    final List<dynamic> decoded = jsonDecode(raw);
-    return decoded.map((e) => Task.fromJson(e)).toList();
-  }
-
-  static Future<void> saveAll(List<Task> tasks) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _prefsKey,
-      jsonEncode(tasks.map((t) => t.toJson()).toList()),
-    );
-  }
 }

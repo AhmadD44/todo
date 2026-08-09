@@ -1,8 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../models/task.dart';
+import '../services/auth_service.dart';
+import '../services/notification_service.dart';
+import '../services/push_service.dart';
+import '../services/user_repository.dart';
 import '../theme/app_theme.dart';
+import '../widgets/stream_error.dart';
 import '../widgets/task_tile.dart';
+import 'account_screen.dart';
 import 'common_view.dart';
 import 'special_dates_view.dart';
 
@@ -16,9 +22,6 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
-  List<Task> _tasks = [];
-  bool _isLoading = true;
-
   // Tabs: All · Common · Dates · Personal  (Common sits beside All).
   late final TabController _tabController;
   static const int _commonTabIndex = 1;
@@ -29,7 +32,9 @@ class _HomeScreenState extends State<HomeScreen>
     _tabController = TabController(length: 4, vsync: this)
       // Rebuild so the FAB hides while the Common tab is active.
       ..addListener(() => setState(() {}));
-    _loadTasks();
+    _rescheduleReminders();
+    final uid = _uid;
+    if (uid != null) PushService.init(uid);
   }
 
   @override
@@ -38,68 +43,66 @@ class _HomeScreenState extends State<HomeScreen>
     super.dispose();
   }
 
-  Future<void> _loadTasks() async {
+  String? get _uid => AuthService.uid;
+
+  /// Re-arm the signed-in user's reminders once, on entering the app —
+  /// personal dates plus any shared with a partner.
+  Future<void> _rescheduleReminders() async {
     try {
-      _tasks = await Task.loadAll();
+      final uid = _uid;
+      if (uid == null) return;
+      final dates = await UserRepository.loadSpecialDates(uid);
+      final code = await UserRepository.loadCoupleCode(uid);
+      if (code != null) {
+        dates.addAll(await UserRepository.loadSharedSpecialDates(code));
+      }
+      await NotificationService.instance.rescheduleAll(dates);
     } catch (e) {
-      debugPrint('Error loading tasks: $e');
+      debugPrint('Error rescheduling reminders: $e');
     }
-    setState(() => _isLoading = false);
   }
 
-  Future<void> _saveTasks() => Task.saveAll(_tasks);
-
   void _addTask(String title, String category) {
+    final uid = _uid;
+    if (uid == null) return;
     final newTask = Task(
-      id: DateTime.now().toIso8601String(),
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
       title: title,
       category: category,
       createdAt: DateTime.now(),
     );
-    setState(() => _tasks.insert(0, newTask));
-    _saveTasks();
+    UserRepository.upsertTask(uid, newTask);
   }
 
   /// Apply edits from the edit dialog, keeping id/createdAt/done state intact.
-  void _updateTask(String id, String title, String category) {
-    setState(() {
-      _tasks = _tasks.map((task) {
-        if (task.id == id) {
-          return task.copyWith(title: title, category: category);
-        }
-        return task;
-      }).toList();
-    });
-    _saveTasks();
+  void _updateTask(Task task, String title, String category) {
+    final uid = _uid;
+    if (uid == null) return;
+    UserRepository.upsertTask(
+        uid, task.copyWith(title: title, category: category));
   }
 
-  void _toggleTask(String id) {
-    setState(() {
-      _tasks = _tasks.map((task) {
-        if (task.id == id) return task.copyWith(isDone: !task.isDone);
-        return task;
-      }).toList();
-    });
-    _saveTasks();
+  void _toggleTask(Task task) {
+    final uid = _uid;
+    if (uid == null) return;
+    UserRepository.upsertTask(uid, task.copyWith(isDone: !task.isDone));
   }
 
-  void _deleteTask(String id) {
-    final removedTask = _tasks.firstWhere((task) => task.id == id);
-    setState(() => _tasks.removeWhere((task) => task.id == id));
-    _saveTasks();
+  void _deleteTask(Task removedTask) {
+    final uid = _uid;
+    if (uid == null) return;
+    UserRepository.deleteTask(uid, removedTask.id);
 
     final messenger = ScaffoldMessenger.of(context);
     messenger.clearSnackBars();
 
     late final ScaffoldFeatureController<SnackBar, SnackBarClosedReason>
         controller;
+    bool closed = false;
 
     void undo() {
-      setState(() {
-        _tasks.add(removedTask);
-        _tasks.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      });
-      _saveTasks();
+      // Re-create the note document with its original id/data.
+      UserRepository.upsertTask(uid, removedTask);
       controller.close();
     }
 
@@ -143,8 +146,15 @@ class _HomeScreenState extends State<HomeScreen>
       ),
     );
 
-    // Force auto-dismiss after 6s even if the mouse is hovering over it.
-    Future.delayed(const Duration(seconds: 6), () => controller.close());
+    // Mark the snackbar closed once it's gone (auto-dismiss, undo, or replaced
+    // by a later delete) so the timer below never closes a removed snackbar.
+    controller.closed.whenComplete(() => closed = true);
+
+    // Force auto-dismiss after 6s even if the pointer is hovering over it —
+    // but only if it's still showing, otherwise closing it throws "No element".
+    Future.delayed(const Duration(seconds: 6), () {
+      if (!closed) controller.close();
+    });
   }
 
   /// Shows the add dialog, or the edit dialog when [existing] is provided.
@@ -273,7 +283,7 @@ class _HomeScreenState extends State<HomeScreen>
                     if (taskTitle.trim().isNotEmpty) {
                       if (isEditing) {
                         _updateTask(
-                            existing.id, taskTitle.trim(), selectedCategory);
+                            existing, taskTitle.trim(), selectedCategory);
                       } else {
                         _addTask(taskTitle.trim(), selectedCategory);
                       }
@@ -298,8 +308,8 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Widget _buildTaskList(String filter) {
-    final filteredList = _tasks.where((task) {
+  Widget _buildTaskList(String filter, List<Task> tasks) {
+    final filteredList = tasks.where((task) {
       if (filter == 'All') return true;
       return task.category == filter;
     }).toList();
@@ -342,7 +352,7 @@ class _HomeScreenState extends State<HomeScreen>
         return Dismissible(
           key: Key(task.id),
           direction: DismissDirection.endToStart,
-          onDismissed: (_) => _deleteTask(task.id),
+          onDismissed: (_) => _deleteTask(task),
           background: Container(
             margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
             alignment: Alignment.centerRight,
@@ -369,8 +379,8 @@ class _HomeScreenState extends State<HomeScreen>
           ),
           child: TaskTile(
             task: task,
-            onToggle: () => _toggleTask(task.id),
-            onDelete: () => _deleteTask(task.id),
+            onToggle: () => _toggleTask(task),
+            onDelete: () => _deleteTask(task),
             onEdit: () => _showTaskDialog(context, existing: task),
           ),
         );
@@ -405,6 +415,17 @@ class _HomeScreenState extends State<HomeScreen>
                 Navigator.of(context).push(
                   MaterialPageRoute(
                       builder: (_) => const SpecialDatesScreen()),
+                );
+              },
+            ),
+            IconButton(
+              tooltip: 'Account',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.account_circle_rounded,
+                  color: AppColors.crimson),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AccountScreen()),
                 );
               },
             ),
@@ -467,18 +488,29 @@ class _HomeScreenState extends State<HomeScreen>
             ),
           ),
         ),
-        body: _isLoading
-            ? const Center(
-                child: CircularProgressIndicator(color: AppColors.crimson))
-            : TabBarView(
-                controller: _tabController,
-                children: [
-                  _buildTaskList('All'),
-                  const CommonTab(),
-                  _buildTaskList('Dates'),
-                  _buildTaskList('Personal'),
-                ],
-              ),
+        body: StreamBuilder<List<Task>>(
+          stream: _uid == null ? null : UserRepository.tasksStream(_uid!),
+          builder: (context, snapshot) {
+            if (snapshot.hasError && !snapshot.hasData) {
+              return const StreamError(message: 'Couldn\'t load your notes.');
+            }
+            if (snapshot.connectionState == ConnectionState.waiting &&
+                !snapshot.hasData) {
+              return const Center(
+                  child: CircularProgressIndicator(color: AppColors.crimson));
+            }
+            final tasks = snapshot.data ?? const <Task>[];
+            return TabBarView(
+              controller: _tabController,
+              children: [
+                _buildTaskList('All', tasks),
+                const CommonTab(),
+                _buildTaskList('Dates', tasks),
+                _buildTaskList('Personal', tasks),
+              ],
+            );
+          },
+        ),
         // Hide the "Add Plan" FAB on the Common tab (it has its own Write button).
         floatingActionButton: _tabController.index == _commonTabIndex
             ? null

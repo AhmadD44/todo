@@ -5,10 +5,12 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Firebase: apply the Google Services plugin only once google-services.json
-// has been added, so the app still builds before Firebase is configured.
+// Firebase: apply the Google Services + Crashlytics plugins only once
+// google-services.json has been added, so the app still builds before
+// Firebase is configured.
 if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
+    apply(plugin = "com.google.firebase.crashlytics")
 }
 
 android {

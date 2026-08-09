@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../models/common_note.dart';
+import '../services/auth_service.dart';
 import '../services/common_service.dart';
 import '../services/couple_service.dart';
+import '../services/push_sender.dart';
+import '../services/user_repository.dart';
 import '../theme/app_theme.dart';
 
 const List<String> _kMonths = [
@@ -38,11 +42,22 @@ class _CommonTabState extends State<CommonTab> {
   }
 
   Future<void> _load() async {
-    final saved = await CoupleService.load();
+    final uid = AuthService.uid;
+    String? code;
+    if (uid != null) {
+      try {
+        code = await UserRepository.loadCoupleCode(uid);
+      } catch (e) {
+        debugPrint('Error loading couple code: $e');
+      }
+    }
     if (!mounted) return;
     setState(() {
-      _code = saved.code;
-      _name = saved.name;
+      _code = code;
+      // The author name comes from the signed-in account.
+      _name = AuthService.currentUser?.displayName ??
+          AuthService.currentUser?.email ??
+          'Me';
       _loading = false;
     });
   }
@@ -176,7 +191,6 @@ class _CommonTabState extends State<CommonTab> {
   // ------------------------------------------------------------ pairing ----
 
   Widget _buildPairing() {
-    final nameCtrl = TextEditingController();
     final codeCtrl = TextEditingController();
 
     return SingleChildScrollView(
@@ -204,8 +218,6 @@ class _CommonTabState extends State<CommonTab> {
             style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
           ),
           const SizedBox(height: 28),
-          _field(nameCtrl, 'Your name', Icons.person_rounded),
-          const SizedBox(height: 14),
           _field(codeCtrl, 'Couple code',
               Icons.vpn_key_rounded,
               caps: true),
@@ -227,19 +239,23 @@ class _CommonTabState extends State<CommonTab> {
           const SizedBox(height: 14),
           ElevatedButton(
             onPressed: () async {
-              final name = nameCtrl.text.trim();
+              final uid = AuthService.uid;
               final code = CoupleService.normalise(codeCtrl.text);
-              if (name.isEmpty || code.isEmpty) {
-                _toast('Please enter your name and a couple code 💌');
+              if (code.isEmpty || uid == null) {
+                _toast('Please enter a couple code 💌');
                 return;
               }
-              await CoupleService.save(code: code, name: name);
+              final result = await UserRepository.joinCouple(uid, code);
               if (!mounted) return;
-              setState(() {
-                _name = name;
-                _code = code;
-              });
-              _toast('Linked! You are both on $code 💞');
+              switch (result) {
+                case JoinResult.joined:
+                  setState(() => _code = code);
+                  _toast('Linked! You are both on $code 💞');
+                case JoinResult.full:
+                  _toast('That code is already used by another couple 💔');
+                case JoinResult.error:
+                  _toast('Could not link — please try again.');
+              }
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.crimson,
@@ -343,12 +359,13 @@ class _CommonTabState extends State<CommonTab> {
                   child: ElevatedButton.icon(
                     onPressed: () async {
                       Navigator.pop(sheetContext);
-                      await CoupleService.unpair();
+                      final uid = AuthService.uid;
+                      final code = _code;
+                      if (uid != null && code != null) {
+                        await UserRepository.leaveCouple(uid, code);
+                      }
                       if (!mounted) return;
-                      setState(() {
-                        _code = null;
-                        _name = null;
-                      });
+                      setState(() => _code = null);
                     },
                     icon: const Icon(Icons.link_off_rounded, size: 16),
                     label: const Text('Unlink',
@@ -434,7 +451,9 @@ class _CommonTabState extends State<CommonTab> {
   }
 
   Widget _buildNoteCard(CommonNote note) {
-    final bool mine = note.author == _name;
+    final myUid = AuthService.uid;
+    final bool mine =
+        note.authorUid != null ? note.authorUid == myUid : note.author == _name;
     final bool done = note.isDone;
 
     return Container(
@@ -462,179 +481,476 @@ class _CommonTabState extends State<CommonTab> {
           width: 1.5,
         ),
       ),
-      child: ListTile(
-        // Tap the card to edit — both partners can edit any note here.
-        onTap: () => _showNoteDialog(existing: note),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        leading: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            color: done
-                ? Colors.black12.withOpacity(0.05)
-                : (mine
-                    ? AppColors.leadingDates(context)
-                    : AppColors.leadingPersonal(context)),
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Text(
-              note.author.isEmpty ? '?' : note.author[0].toUpperCase(),
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w900,
-                color: done ? AppColors.muted(context) : AppColors.crimson,
-              ),
-            ),
-          ),
-        ),
-        title: Text(
-          note.text,
-          style: TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-            color: done ? AppColors.muted(context) : AppColors.bodyText(context),
-            decoration: done ? TextDecoration.lineThrough : null,
-            decorationThickness: 2,
-            decorationColor: const Color(0xFFE91E63).withOpacity(0.5),
-          ),
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            '${mine ? 'You' : note.author}  •  ${_fmtWhen(note.createdAt)}',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-              color: done ? AppColors.muted(context) : AppColors.crimson,
-            ),
-          ),
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 8, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Mark done / undone (syncs to both phones)
-            InkWell(
-              onTap: () => CommonService.toggleDone(
-                  code: _code!, id: note.id, isDone: !done),
-              borderRadius: BorderRadius.circular(30),
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                transitionBuilder: (child, anim) =>
-                    ScaleTransition(scale: anim, child: child),
-                child: done
-                    ? const Icon(Icons.favorite,
-                        key: ValueKey('c_done'),
-                        color: Colors.redAccent,
-                        size: 28)
-                    : const Icon(Icons.favorite_border,
-                        key: ValueKey('c_undone'),
-                        color: Color(0xFFEC407A),
-                        size: 28),
+            // Header: avatar · text/author · done · delete
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: done
+                        ? Colors.black12.withOpacity(0.05)
+                        : (mine
+                            ? AppColors.leadingDates(context)
+                            : AppColors.leadingPersonal(context)),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Text(
+                      note.author.isEmpty ? '?' : note.author[0].toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                        color:
+                            done ? AppColors.muted(context) : AppColors.crimson,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // Tap the text to edit.
+                Expanded(
+                  child: InkWell(
+                    onTap: () => _showNoteDialog(existing: note),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (note.text.isNotEmpty)
+                          Text(
+                            note.text,
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: done
+                                  ? AppColors.muted(context)
+                                  : AppColors.bodyText(context),
+                              decoration:
+                                  done ? TextDecoration.lineThrough : null,
+                              decorationThickness: 2,
+                              decorationColor:
+                                  const Color(0xFFE91E63).withOpacity(0.5),
+                            ),
+                          ),
+                        Padding(
+                          padding: EdgeInsets.only(
+                              top: note.text.isNotEmpty ? 4 : 0),
+                          child: Text(
+                            '${mine ? 'You' : note.author}  •  ${_fmtWhen(note.createdAt)}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: done
+                                  ? AppColors.muted(context)
+                                  : AppColors.crimson,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                // Heart + trash on one line, vertically centered together.
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    IconButton(
+                      tooltip: done ? 'Mark not done' : 'Mark done',
+                      padding: const EdgeInsets.all(6),
+                      constraints: const BoxConstraints(),
+                      iconSize: 24,
+                      icon: Icon(
+                        done ? Icons.favorite : Icons.favorite_border,
+                        color:
+                            done ? Colors.redAccent : const Color(0xFFEC407A),
+                      ),
+                      onPressed: () => CommonService.toggleDone(
+                          code: _code!, id: note.id, isDone: !done),
+                    ),
+                    IconButton(
+                      tooltip: 'Delete',
+                      padding: const EdgeInsets.all(6),
+                      constraints: const BoxConstraints(),
+                      iconSize: 24,
+                      icon: Icon(Icons.delete_outline_rounded,
+                          color: AppColors.muted(context)),
+                      onPressed: () async {
+                        await CommonService.delete(code: _code!, id: note.id);
+                        if (!mounted) return;
+                        _toast('Note removed.');
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+
+            // Photo (loaded lazily from its own Firestore doc)
+            if (note.imageId != null) ...[
+              const SizedBox(height: 10),
+              FutureBuilder<Uint8List?>(
+                future:
+                    CommonService.loadImage(code: _code!, id: note.imageId!),
+                builder: (context, snap) {
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return Container(
+                      height: 180,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: AppColors.softPink(context),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const CircularProgressIndicator(
+                          color: AppColors.crimson),
+                    );
+                  }
+                  final bytes = snap.data;
+                  if (bytes == null) {
+                    return Container(
+                      height: 100,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: AppColors.softPink(context),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(Icons.broken_image_rounded,
+                          color: AppColors.muted(context)),
+                    );
+                  }
+                  return GestureDetector(
+                    onTap: () => _viewImage(bytes),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(
+                        bytes,
+                        height: 180,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  );
+                },
               ),
-            ),
-            const SizedBox(width: 2),
-            // Delete
-            IconButton(
-              tooltip: 'Delete',
-              splashRadius: 20,
-              icon: Icon(Icons.delete_outline_rounded,
-                  color: AppColors.muted(context), size: 22),
-              onPressed: () async {
-                await CommonService.delete(code: _code!, id: note.id);
-                if (!mounted) return;
-                _toast('Note removed.');
-              },
-            ),
+            ],
+
+            // Reactions
+            _reactionsBar(note, myUid),
           ],
         ),
       ),
     );
   }
 
-  /// Write a new note, or edit one of your own when [existing] is given.
+  /// Row of existing reactions (grouped with counts) + an add-reaction button.
+  Widget _reactionsBar(CommonNote note, String? myUid) {
+    // Group emoji → count.
+    final counts = <String, int>{};
+    for (final emoji in note.reactions.values) {
+      counts[emoji] = (counts[emoji] ?? 0) + 1;
+    }
+    final myReaction = myUid == null ? null : note.reactions[myUid];
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, left: 52),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          for (final entry in counts.entries)
+            GestureDetector(
+              onTap: () => _react(note, entry.key),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: myReaction == entry.key
+                      ? AppColors.softPink(context)
+                      : AppColors.softPink(context).withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: myReaction == entry.key
+                        ? AppColors.crimson
+                        : Colors.transparent,
+                    width: 1,
+                  ),
+                ),
+                child: Text('${entry.key} ${entry.value}',
+                    style: const TextStyle(fontSize: 12)),
+              ),
+            ),
+          // Add-reaction button
+          GestureDetector(
+            onTap: () => _pickReaction(note),
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: AppColors.softPink(context).withOpacity(0.5),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.add_reaction_outlined,
+                  size: 16, color: AppColors.crimson),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const List<String> _kReactionEmojis = [
+    '❤️', '😍', '😂', '👍', '🥺', '🔥'
+  ];
+
+  /// Toggle a specific emoji reaction for the current user.
+  Future<void> _react(CommonNote note, String emoji) async {
+    final uid = AuthService.uid;
+    if (uid == null || _code == null) return;
+    final current = note.reactions[uid];
+    await CommonService.setReaction(
+      code: _code!,
+      id: note.id,
+      uid: uid,
+      emoji: current == emoji ? null : emoji, // tap again to remove
+    );
+  }
+
+  /// Small emoji picker sheet for adding a reaction.
+  void _pickReaction(CommonNote note) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.dialogBg(context),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            for (final emoji in _kReactionEmojis)
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _react(note, emoji);
+                },
+                child: Text(emoji, style: const TextStyle(fontSize: 30)),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Fullscreen, zoomable image viewer.
+  void _viewImage(Uint8List bytes) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          iconTheme: const IconThemeData(color: Colors.white),
+        ),
+        body: Center(
+          child: InteractiveViewer(
+            child: Image.memory(bytes),
+          ),
+        ),
+      ),
+    ));
+  }
+
+  /// Write a new note (optionally with a photo), or edit an existing one's text.
   void _showNoteDialog({CommonNote? existing}) {
     final bool isEditing = existing != null;
     final controller = TextEditingController(text: existing?.text ?? '');
+    Uint8List? pickedImage;
+    bool posting = false;
 
     showDialog(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: AppColors.dialogBg(context),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: Row(
-          children: [
-            const Icon(Icons.forum_rounded, color: AppColors.crimson),
-            const SizedBox(width: 8),
-            Text(
-              isEditing ? 'Edit note' : 'Write together',
-              style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.heading(context)),
-            ),
-          ],
-        ),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLines: 4,
-          minLines: 2,
-          textCapitalization: TextCapitalization.sentences,
-          style: TextStyle(color: AppColors.bodyText(context)),
-          decoration: InputDecoration(
-            hintText: 'Say something to both of you… 💕',
-            hintStyle: TextStyle(color: Colors.grey.shade400),
-            filled: true,
-            fillColor: AppColors.pickerField(context),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
-              borderSide: BorderSide(color: Colors.pink.shade100),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(color: AppColors.crimson, width: 2),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel',
-                style: TextStyle(
-                    color: Colors.grey, fontWeight: FontWeight.bold)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            Future<void> pick() async {
+              // Compress hard so the base64 stays under Firestore's ~1MB limit.
+              final picked = await ImagePicker().pickImage(
+                source: ImageSource.gallery,
+                maxWidth: 1024,
+                imageQuality: 45,
+              );
+              if (picked == null) return;
+              final bytes = await picked.readAsBytes();
+              if (bytes.length > 700 * 1024) {
+                _toast('That photo is too large — please pick a smaller one.');
+                return;
+              }
+              setDialogState(() => pickedImage = bytes);
+            }
+
+            Future<void> submit() async {
               final text = controller.text.trim();
-              if (text.isEmpty) return;
-              Navigator.pop(dialogContext);
+              if (text.isEmpty && pickedImage == null) return;
+              final uid = AuthService.uid;
+              if (uid == null) return;
+              setDialogState(() => posting = true);
               try {
                 if (isEditing) {
                   await CommonService.update(
                       code: _code!, id: existing.id, text: text);
                 } else {
+                  String? imageId;
+                  if (pickedImage != null) {
+                    imageId = await CommonService.storeImage(
+                        code: _code!, bytes: pickedImage!);
+                  }
                   await CommonService.add(
-                      code: _code!, text: text, author: _name!);
+                    code: _code!,
+                    text: text,
+                    author: _name!,
+                    authorUid: uid,
+                    imageId: imageId,
+                  );
+                  // Ask the (free, no-card) push endpoint to notify the partner.
+                  PushSender.notifyPartner(_code!);
                 }
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
               } catch (e) {
-                if (!mounted) return;
-                _toast('Could not save: $e');
+                setDialogState(() => posting = false);
+                if (mounted) _toast('Could not save: $e');
               }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.crimson,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-              elevation: 1,
-            ),
-            child: Text(isEditing ? 'Save' : 'Post 💌',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
+            }
+
+            return AlertDialog(
+              backgroundColor: AppColors.dialogBg(context),
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              title: Row(
+                children: [
+                  const Icon(Icons.forum_rounded, color: AppColors.crimson),
+                  const SizedBox(width: 8),
+                  Text(
+                    isEditing ? 'Edit note' : 'Write together',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.heading(context)),
+                  ),
+                ],
+              ),
+              // Bounded width so AlertDialog's IntrinsicWidth doesn't choke on
+              // the full-width image preview (width: double.infinity).
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: controller,
+                        autofocus: true,
+                        maxLines: 4,
+                        minLines: 2,
+                      textCapitalization: TextCapitalization.sentences,
+                      style: TextStyle(color: AppColors.bodyText(context)),
+                      decoration: InputDecoration(
+                        hintText: 'Say something to both of you… 💕',
+                        hintStyle: TextStyle(color: Colors.grey.shade400),
+                        filled: true,
+                        fillColor: AppColors.pickerField(context),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(color: Colors.pink.shade100),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: const BorderSide(
+                              color: AppColors.crimson, width: 2),
+                        ),
+                      ),
+                    ),
+                    if (!isEditing) ...[
+                      const SizedBox(height: 12),
+                      if (pickedImage != null)
+                        Stack(
+                          alignment: Alignment.topRight,
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.memory(pickedImage!,
+                                  height: 140,
+                                  width: double.infinity,
+                                  fit: BoxFit.cover),
+                            ),
+                            IconButton(
+                              icon: const CircleAvatar(
+                                radius: 14,
+                                backgroundColor: Colors.black54,
+                                child: Icon(Icons.close,
+                                    size: 16, color: Colors.white),
+                              ),
+                              onPressed: () =>
+                                  setDialogState(() => pickedImage = null),
+                            ),
+                          ],
+                        )
+                      else
+                        OutlinedButton.icon(
+                          onPressed: pick,
+                          icon: const Icon(Icons.add_photo_alternate_rounded,
+                              size: 18, color: AppColors.crimson),
+                          label: const Text('Add photo',
+                              style: TextStyle(
+                                  color: AppColors.crimson,
+                                  fontWeight: FontWeight.bold)),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: Colors.pink.shade100),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                    ],
+                  ],
+                ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      posting ? null : () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel',
+                      style: TextStyle(
+                          color: Colors.grey, fontWeight: FontWeight.bold)),
+                ),
+                ElevatedButton(
+                  onPressed: posting ? null : submit,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.crimson,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    elevation: 1,
+                  ),
+                  child: posting
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2.5),
+                        )
+                      : Text(isEditing ? 'Save' : 'Post 💌',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 }

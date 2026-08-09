@@ -1,6 +1,3 @@
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
-
 /// The selectable reminder types and their matching emoji.
 const List<Map<String, String>> kSpecialDateTypes = [
   {'type': 'First Date', 'emoji': '💞'},
@@ -26,6 +23,10 @@ class SpecialDate {
   final int notifId; // base id; the 3 reminders use notifId, +1, +2
   final bool repeatYearly;
 
+  /// True when this date lives in the couple's shared collection (both partners
+  /// see it and get reminded). Not persisted for personal dates.
+  final bool shared;
+
   SpecialDate({
     required this.id,
     required this.title,
@@ -33,6 +34,7 @@ class SpecialDate {
     required this.dateTime,
     required this.notifId,
     this.repeatYearly = false,
+    this.shared = false,
   });
 
   String get emoji => emojiForType(type);
@@ -64,31 +66,15 @@ class SpecialDate {
         'repeatYearly': repeatYearly,
       };
 
-  factory SpecialDate.fromJson(Map<String, dynamic> json) => SpecialDate(
+  factory SpecialDate.fromJson(Map<String, dynamic> json,
+          {bool shared = false}) =>
+      SpecialDate(
         id: json['id'],
         title: json['title'],
         type: json['type'] ?? 'Other',
         dateTime: DateTime.parse(json['dateTime']),
         notifId: json['notifId'] ?? 0,
         repeatYearly: json['repeatYearly'] ?? false,
+        shared: shared,
       );
-
-  // --- Persistence (SharedPreferences JSON) ---
-  static const String _prefsKey = 'special_dates';
-
-  static Future<List<SpecialDate>> loadAll() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_prefsKey);
-    if (raw == null) return [];
-    final List<dynamic> decoded = jsonDecode(raw);
-    return decoded.map((e) => SpecialDate.fromJson(e)).toList();
-  }
-
-  static Future<void> saveAll(List<SpecialDate> dates) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _prefsKey,
-      jsonEncode(dates.map((d) => d.toJson()).toList()),
-    );
-  }
 }

@@ -1,49 +1,91 @@
 rules_version = '2';
 
-// Security rules for the "Common" shared feed.
+// Security rules for sisi notes.
 //
-// Notes live at: couples/{coupleCode}/notes/{noteId}
-//
-// The app has no user accounts — pairing is by a shared couple code — so these
-// rules validate the *shape* of the data rather than user identity. The couple
-// code acts as a shared secret: only someone who knows it can read/write that
-// couple's feed. Use a non-trivial code (the app generates SISI-XXXX).
-//
-// NOTE: this is privacy-by-obscurity, appropriate for a private 2-person app.
-// It is NOT strong security — anyone who learns your couple code can access the
-// feed. For stronger guarantees you would add Firebase Auth later.
+//   users/{uid}                       → profile + coupleCode (private)
+//   users/{uid}/tasks/{id}            → private notes
+//   users/{uid}/specialDates/{id}     → private reminders
+//   couples/{code}                    → { members: [uid, ...] }  (max 2)
+//   couples/{code}/notes/{id}         → shared "Common" feed (members only)
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Everything is denied unless a rule below explicitly allows it.
-    match /couples/{coupleCode}/notes/{noteId} {
-
-      // A well-formed note the app writes.
-      function isValidNote(data) {
-        return data.text is string
-            && data.text.size() > 0
-            && data.text.size() <= 2000
-            && data.author is string
-            && data.author.size() <= 100
-            && (!('isDone' in data) || data.isDone is bool);
+    // --- Private per-user data (doc + all subcollections) ---
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+      match /{sub=**} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
       }
-
-      // Reading the feed only requires knowing the couple code (the doc path).
-      allow read: if true;
-
-      // Creating a note: must be well-formed and carry a server timestamp.
-      allow create: if isValidNote(request.resource.data)
-                    && request.resource.data.createdAt == request.time;
-
-      // Editing: only the text may change; author & timestamp stay fixed.
-      allow update: if isValidNote(request.resource.data)
-                    && request.resource.data.author == resource.data.author
-                    && request.resource.data.createdAt == resource.data.createdAt;
-
-      allow delete: if true;
     }
 
-    // Block access to any other path.
+    // --- Couple membership doc ---
+    match /couples/{code} {
+      allow read: if request.auth != null;
+
+      // First partner creates the couple with themselves as the sole member.
+      allow create: if request.auth != null
+                    && request.resource.data.members is list
+                    && request.resource.data.members.size() == 1
+                    && request.resource.data.members[0] == request.auth.uid;
+
+      // Existing member edits it, or a second partner joins an open code.
+      allow update: if request.auth != null
+                    && request.resource.data.members.size() <= 2
+                    && (request.auth.uid in resource.data.members
+                        || (resource.data.members.size() < 2
+                            && request.auth.uid in request.resource.data.members));
+
+      // --- Shared Common feed (only the couple's members) ---
+      match /notes/{noteId} {
+        function isMember() {
+          return request.auth != null
+              && request.auth.uid in
+                 get(/databases/$(database)/documents/couples/$(code)).data.members;
+        }
+        function isValidNote(data) {
+          return data.text is string
+              && data.text.size() <= 2000
+              // must have text or a photo (or both)
+              && (data.text.size() > 0 || 'imageUrl' in data)
+              && data.author is string
+              && data.author.size() <= 100
+              && (!('isDone' in data) || data.isDone is bool)
+              && (!('reactions' in data) || data.reactions is map);
+        }
+
+        allow read: if isMember();
+        allow create: if isMember()
+                      && isValidNote(request.resource.data)
+                      && request.resource.data.createdAt == request.time;
+        allow update: if isMember()
+                      && isValidNote(request.resource.data)
+                      && request.resource.data.author == resource.data.author
+                      && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isMember();
+      }
+
+      // --- Shared special dates (only the couple's members) ---
+      match /specialDates/{dateId} {
+        function isMemberSD() {
+          return request.auth != null
+              && request.auth.uid in
+                 get(/databases/$(database)/documents/couples/$(code)).data.members;
+        }
+        allow read, write: if isMemberSD();
+      }
+
+      // --- Common-feed images (base64, members only) ---
+      match /images/{imageId} {
+        function isMemberImg() {
+          return request.auth != null
+              && request.auth.uid in
+                 get(/databases/$(database)/documents/couples/$(code)).data.members;
+        }
+        allow read, write: if isMemberImg();
+      }
+    }
+
+    // Block everything else.
     match /{document=**} {
       allow read, write: if false;
     }

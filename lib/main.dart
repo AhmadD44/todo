@@ -1,11 +1,16 @@
+import 'dart:ui';
+
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'firebase_options.dart';
 import 'services/common_service.dart';
 import 'services/notification_service.dart';
 import 'theme/app_theme.dart';
-import 'views/home_view.dart';
+import 'views/auth_gate.dart';
+import 'views/onboarding_screen.dart';
 import 'views/special_dates_view.dart';
 
 /// Global navigator so notification taps can navigate without a BuildContext.
@@ -14,34 +19,47 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Load the saved theme (guarded internally) before the first frame.
+  // Load the saved theme + onboarding flag (guarded) before the first frame.
   await loadThemeMode();
+  await loadOnboardingSeen();
 
-  // Render the UI immediately. All native setup runs afterwards and is fully
-  // guarded, so a slow/failed native call can never block startup — otherwise
-  // the app would sit forever on the launch/splash screen (seen on iOS).
+  // Firebase must be ready before the AuthGate can decide login vs. home.
+  // initializeApp is fast and works offline, so awaiting it is safe.
+  await _initFirebase();
+
   runApp(const LoveNotesApp());
 
-  _initFirebase();
+  // Notification setup runs afterwards, fully guarded, so it can never block
+  // startup (which would leave the app stuck on the splash screen on iOS).
   _initNotifications();
 }
 
-/// Initialise Firebase for the shared Common feed. Failure is non-fatal: the
-/// Common screen simply shows setup instructions and the rest of the app
-/// (notes, special dates) keeps working entirely offline.
+/// Initialise Firebase (auth + Firestore). Failure is non-fatal: the app falls
+/// back to a signed-out local experience and Common shows its setup screen.
 Future<void> _initFirebase() async {
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
     CommonService.isReady = true;
+
+    // Route uncaught Flutter + async errors to Crashlytics (mobile only).
+    if (!kIsWeb) {
+      FlutterError.onError =
+          FirebaseCrashlytics.instance.recordFlutterFatalError;
+      PlatformDispatcher.instance.onError = (error, stack) {
+        FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+        return true;
+      };
+    }
   } catch (e) {
     CommonService.isReady = false;
-    debugPrint('Firebase not configured — Common feed disabled: $e');
+    debugPrint('Firebase not configured: $e');
   }
 }
 
-/// Initialise notifications without blocking app startup.
+/// Initialise notifications without blocking app startup. Reminders themselves
+/// are (re)scheduled once the signed-in user's special dates load.
 Future<void> _initNotifications() async {
   try {
     await NotificationService.instance.init();
@@ -53,9 +71,6 @@ Future<void> _initNotifications() async {
     if (await NotificationService.instance.launchedFromNotification()) {
       _openSpecialDates();
     }
-
-    // Re-arm saved reminders (rolls yearly dates forward, survives reboots).
-    await NotificationService.instance.rescheduleAll();
   } catch (e) {
     debugPrint('Notification initialisation failed: $e');
   }
@@ -83,9 +98,23 @@ class LoveNotesApp extends StatelessWidget {
           theme: buildAppTheme(Brightness.light),
           darkTheme: buildAppTheme(Brightness.dark),
           themeMode: mode,
-          home: const HomeScreen(),
+          home: const _Root(),
         );
       },
+    );
+  }
+}
+
+/// Shows onboarding on first launch, otherwise the auth gate.
+class _Root extends StatelessWidget {
+  const _Root();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: onboardingSeenNotifier,
+      builder: (context, seen, _) =>
+          seen ? const AuthGate() : const OnboardingScreen(),
     );
   }
 }
