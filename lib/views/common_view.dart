@@ -6,7 +6,6 @@ import '../models/common_note.dart';
 import '../services/auth_service.dart';
 import '../services/common_service.dart';
 import '../services/couple_service.dart';
-import '../services/push_sender.dart';
 import '../services/user_repository.dart';
 import '../theme/app_theme.dart';
 
@@ -816,8 +815,6 @@ class _CommonTabState extends State<CommonTab> {
                     authorUid: uid,
                     imageId: imageId,
                   );
-                  // Ask the (free, no-card) push endpoint to notify the partner.
-                  PushSender.notifyPartner(_code!);
                 }
                 if (dialogContext.mounted) Navigator.pop(dialogContext);
               } catch (e) {

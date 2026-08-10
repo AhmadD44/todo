@@ -1,9 +1,0 @@
-{
-  "name": "sisi-push-server",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Free no-card push sender for sisi notes (Vercel serverless).",
-  "dependencies": {
-    "firebase-admin": "^12.6.0"
-  }
-}

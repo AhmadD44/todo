@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../models/task.dart';
 import '../services/auth_service.dart';
 import '../services/notification_service.dart';
-import '../services/push_service.dart';
 import '../services/user_repository.dart';
 import '../theme/app_theme.dart';
 import '../widgets/stream_error.dart';
@@ -33,8 +32,6 @@ class _HomeScreenState extends State<HomeScreen>
       // Rebuild so the FAB hides while the Common tab is active.
       ..addListener(() => setState(() {}));
     _rescheduleReminders();
-    final uid = _uid;
-    if (uid != null) PushService.init(uid);
   }
 
   @override

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../services/auth_service.dart';
-import '../services/push_service.dart';
 import '../theme/app_theme.dart';
 
 /// Account management: name, password, email verification, logout, delete.
@@ -189,8 +188,6 @@ class _AccountScreenState extends State<AccountScreen> {
   /// Sign out, then pop back to the root so the AuthGate's login screen shows
   /// (otherwise this pushed screen would stay on top of it).
   Future<void> _logout() async {
-    final uid = AuthService.uid;
-    if (uid != null) await PushService.removeToken(uid);
     await AuthService.signOut();
     if (!mounted) return;
     Navigator.of(context).popUntil((route) => route.isFirst);

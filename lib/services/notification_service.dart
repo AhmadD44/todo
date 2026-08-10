@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/timezone.dart' as tz;
@@ -14,7 +15,7 @@ class NotificationService {
   static const String _channelId = 'special_dates_channel';
   static const String _channelName = 'Special Date Reminders';
   static const String _channelDesc = 'Reminders for your important dates 💖';
-  static const String _icon = '@drawable/ic_stat_heart';
+  static const String _icon = '@drawable/ic_stat_logo'; 
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
@@ -37,7 +38,7 @@ class NotificationService {
       // If the platform can't report a zone we fall back to the default (UTC).
     }
 
-    const androidInit = AndroidInitializationSettings('ic_stat_heart');
+    const androidInit = AndroidInitializationSettings('ic_stat_logo');
     // iOS: don't ask for permission at init — we request it contextually when
     // the user opens the Special Dates screen.
     const iosInit = DarwinInitializationSettings(
@@ -67,17 +68,6 @@ class NotificationService {
     _initialized = true;
   }
 
-  /// Show an immediate notification — used to surface a partner's Common post
-  /// while the app is in the foreground (background is handled by the OS).
-  Future<void> showNow({required String title, required String body}) async {
-    await _plugin.show(
-      id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
-      title: title,
-      body: body,
-      notificationDetails: _details,
-    );
-  }
-
   /// True if the app was launched by tapping a notification (cold start).
   Future<bool> launchedFromNotification() async {
     final details = await _plugin.getNotificationAppLaunchDetails();
@@ -105,6 +95,8 @@ class NotificationService {
           importance: Importance.max,
           priority: Priority.high,
           icon: _icon,
+          colorized: true,
+          color: Colors.white, 
         ),
         iOS: DarwinNotificationDetails(
           presentAlert: true,
